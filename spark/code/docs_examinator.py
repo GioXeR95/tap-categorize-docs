@@ -22,7 +22,7 @@ topic = "docstojson"
 elastic_index = "docs-data"
 
 # Define schema for Kafka messages
-tweetKafkaSchema = StructType([
+KafkaSchema = StructType([
     StructField("uuid", StringType(), True),
     StructField("file_name", StringType(), True),
     StructField("content", StringType(), True),
@@ -30,13 +30,13 @@ tweetKafkaSchema = StructType([
     StructField("data_creation", StringType(), True)
 ])
 
-def get_ai_response(uuid,filename, text):
-    system = "You are an expert data analyst helping us to understand the content of a document basing on the title and the content"
+def get_ai_response(uuid, filename, text):
+    system = "You are an expert data analyst helping us to understand the content of a document based on the title and the content"
     prompt = """
     # You'll receive an input with the following format: filename: <filename>  content: <content> 
     # Your task is to tell us in what category the document could go: personal, business, game, payment, recipe, receipt or if it's not possible to understand use the category 'other'.
-    # Give a small summary of what the document contains in less then 25 words. 
-    # And on a scale from 1 to 10, rate the reliability of the document informations
+    # Give a small summary of what the document contains in less than 25 words. 
+    # And on a scale from 1 to 10, rate the reliability of the document information.
     # Your answer must be in this format only without descriptions or other text added: category: <category>, summary: <summary>, reliability: <reliability>"
     """
     file = f"filename: {filename}\ncontent: {text}"
@@ -51,7 +51,7 @@ def get_ai_response(uuid,filename, text):
         )
         reply = response.choices[0].message.content
         
-        # Extract category and summary from the reply
+        # Extract category, summary, and reliability from the reply
         category_start = reply.find("category: ") + len("category: ")
         category_end = reply.find(", summary:")
         category = reply[category_start:category_end].strip()
@@ -59,46 +59,20 @@ def get_ai_response(uuid,filename, text):
         summary_start = reply.find("summary: ") + len("summary: ")
         summary_end = reply.find(", reliability:")
         summary = reply[summary_start:summary_end].strip()
+
         reliability_start = reply.find("reliability: ") + len("reliability: ")
         reliability = reply[reliability_start:].strip()
-        return uuid,category, summary,reliability
+
+        return category, summary, reliability
     except Exception as e:
         print(f"Error: {e}")
-        return None, None  # Handle error or return a default value
+        return "error", "error", "error"  # Handle error with default values
 
-
-def foreach_batch_add_ai_result(batch_df, batch_id):
-    """
-    Function to apply UDF and save results to Elasticsearch for each batch DataFrame.
-    """
-    print("Batch ID:", batch_id)
-    batch_df.show()
-
-    # Check if batch_df is not empty
-    if batch_df.rdd.isEmpty():
-        print("Skipping batch because it is empty.")
-        return
-    
-    try:
-        # Apply UDF to get AI response (category and summary)
-        udf_result = batch_df.rdd.map(lambda row: get_ai_response(row['uuid'],row['file_name'], row['content'])).toDF(['uuid','category', 'summary', 'reliability'])
-        #udf_result.show()
-        batch_df = batch_df.join(udf_result, on='uuid', how='left')
-        batch_df = batch_df.dropDuplicates(['uuid'])
-        print("Batch after adding AI content:")
-        batch_df.show()
-
-        # Write to Elasticsearch
-        batch_df.write \
-                    .format("es") \
-                    .mode("append") \
-                    .save(elastic_index)
-
-        print("Batch successfully written to Elasticsearch.")
-        
-    except Exception as e:
-        print(f"Error writing batch to Elasticsearch: {e}")
-        # Handle exception, log, retry, or fail gracefully
+# Register the UDF
+get_ai_response_udf = udf(lambda uuid, filename, text: get_ai_response(uuid, filename, text), 
+                          StructType([StructField("category", StringType(), True),
+                                      StructField("summary", StringType(), True),
+                                      StructField("reliability", StringType(), True)]))
 
 def main():
     """
@@ -116,21 +90,23 @@ def main():
 
     # Deserialize JSON and select relevant fields
     df = df.selectExpr("CAST(value AS STRING)") \
-           .select(from_json("value", tweetKafkaSchema).alias("data")) \
-           .select("data.uuid","data.file_name", "data.content", "data.last_edit", "data.data_creation")
+           .select(from_json("value", KafkaSchema).alias("data")) \
+           .select("data.uuid", "data.file_name", "data.content", "data.last_edit", "data.data_creation")
 
     # Filter out empty content and select required columns
     df_filtered = df.filter(col("content").isNotNull() & (col("content") != ""))
-    df_selected = df_filtered.select("uuid","file_name", "content", "last_edit", "data_creation")
 
-    # Write streaming DataFrame to Elasticsearch with AI content
-    query = df_selected.writeStream \
-                       .option("checkpointLocation", "/tmp/") \
-                       .foreachBatch(foreach_batch_add_ai_result) \
-                       .start()
-
-    # Wait for termination
-    query.awaitTermination()
+    # Apply the UDF to get AI response
+    df_with_ai = df_filtered.withColumn("ai_response", get_ai_response_udf(col("uuid"), col("file_name"), col("content")))
+    df_final = df_with_ai.select("uuid", "file_name", "content", "last_edit", "data_creation", 
+                                 col("ai_response.category"), col("ai_response.summary"), col("ai_response.reliability"))
+    
+    # Write streaming DataFrame to Elasticsearch
+    es_query = df_final.writeStream \
+                    .option("checkpointLocation", "/tmp/") \
+                    .format("es") \
+                    .start(elastic_index) 
+    es_query.awitTermination()
 
 if __name__ == "__main__":
     main()
