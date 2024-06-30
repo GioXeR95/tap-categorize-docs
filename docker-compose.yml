@@ -53,9 +53,9 @@ services:
     environment:
       - OPENAI_API_KEY= ${API_KEY}  
     volumes:
-      - ./spark/code/:/opt/tap/
+      - ./spark/code/:/opt/tap-docs/
     command: > 
-      /opt/spark/bin/spark-submit --conf spark.driver.extraJavaOptions="-Divy.cache.dir=/tmp -Divy.home=/tmp" --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.elasticsearch:elasticsearch-spark-30_2.12:8.13.4  /opt/tap/docs_examinator.py
+      /opt/spark/bin/spark-submit --conf spark.driver.extraJavaOptions="-Divy.cache.dir=/tmp -Divy.home=/tmp" --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.elasticsearch:elasticsearch-spark-30_2.12:8.13.4  /opt/tap-docs/docs_examinator.py
     depends_on:
       topics:
         condition: service_completed_successfully
@@ -96,5 +96,3 @@ services:
           condition: service_completed_successfully
 volumes:
   mastodon-out:
-
-# docker run --hostname spark --name sparkwc -p 4040:4040 --network tap -it --rm -v /home/tap/tap-workspace/tap2024/spark/code/:/opt/tap/ -v /home/tap/tap-workspace/tap2024/spark/dataset:/tmp/dataset apache/spark /opt/spark/bin/spark-submit /opt/tap/structuredstreamingwc.py
