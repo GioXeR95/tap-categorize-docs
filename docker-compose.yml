@@ -20,11 +20,13 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      KAFKA_LOG_DIRS: '/tmp/kafka-combined-logs'
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
     ports:
       - '9200:9200'
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -59,15 +61,15 @@ services:
     depends_on:
       topics:
         condition: service_completed_successfully
-  mastodon:
+  documentinator:
     build: ./python
-    hostname: mastodon
-    container_name: mastodon
+    hostname: documentinator
+    container_name: documentinator
     environment: 
-      - outputdir=/mastodon-out
-      - PYTHON_APP=mastodon.py
+      - outputdir=/documentinator-out
+      - PYTHON_APP=documentinator.py
     volumes:
-      - mastodon-out:/mastodon-out
+      - documentinator-out:/documentinator-out
       - ./files/:/usr/src/app/files
       - ./python/bin/:/usr/src/app/bin
     depends_on:
@@ -77,10 +79,10 @@ services:
     build: ./fluentd
     hostname: fluentd
     container_name: fluentd
-    command: "-c /fluentd/etc/mastodon.conf"
+    command: "-c /fluentd/etc/documentinator.conf"
     volumes:
       - ./fluentd/conf:/fluentd/etc
-      - mastodon-out:/mastodon-out
+      - documentinator-out:/documentinator-out
     depends_on:
       topics:
         condition: service_completed_successfully
@@ -90,9 +92,14 @@ services:
     ports:
       - 5601:5601
     volumes:
+      - ./kibana/dashboard:/usr/share/kibana/config/dashboard
+      - ./kibana/import_dashboard.sh:/usr/local/bin/import_dashboard.sh
       - ./kibana/kibana.yml:/usr/share/kibana/config/kibana.yml
+    #entrypoint: ["/bin/sh", "-c", "while ! nc -z elasticsearch 9200; do sleep 1; done; /usr/local/bin/import_dashboard.sh & bin/kibana"]
+    #command: /usr/local/bin/import_dashboard.sh
     depends_on:
         topics:
           condition: service_completed_successfully
 volumes:
-  mastodon-out:
+  documentinator-out:
+  es_data:

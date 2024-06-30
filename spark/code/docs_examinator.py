@@ -1,4 +1,5 @@
 import os
+import random
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import from_json, col, udf
 from pyspark.sql.types import StringType, StructType, StructField
@@ -6,7 +7,7 @@ import openai
 
 # Initialize Spark session
 spark = SparkSession.builder \
-    .appName("docstojson") \
+    .appName("documentinator") \
     .config("es.nodes", "elasticsearch") \
     .config("es.port", "9200") \
     .getOrCreate()
@@ -25,10 +26,19 @@ elastic_index = "docs-data"
 KafkaSchema = StructType([
     StructField("uuid", StringType(), True),
     StructField("file_name", StringType(), True),
+    StructField("file_size", StringType(), True),
+    StructField("file_extension", StringType(), True),
     StructField("content", StringType(), True),
     StructField("last_edit", StringType(), True),
     StructField("data_creation", StringType(), True)
 ])
+
+def get_ai_response_testing(uuid, filename, text):
+    categories_list = ["personal", "business", "game", "payment", "recipe", "receipt"]
+    category = random.choice(categories_list)
+    summary = filename
+    reliability = random.randint(1, 10)
+    return category, summary, reliability 
 
 def get_ai_response(uuid, filename, text):
     system = "You are an expert data analyst helping us to understand the content of a document based on the title and the content"
@@ -69,7 +79,7 @@ def get_ai_response(uuid, filename, text):
         return "error", "error", "error"  # Handle error with default values
 
 # Register the UDF
-get_ai_response_udf = udf(lambda uuid, filename, text: get_ai_response(uuid, filename, text), 
+get_ai_response_udf = udf(lambda uuid, filename, text: get_ai_response_testing(uuid, filename, text), 
                           StructType([StructField("category", StringType(), True),
                                       StructField("summary", StringType(), True),
                                       StructField("reliability", StringType(), True)]))
@@ -91,7 +101,7 @@ def main():
     # Deserialize JSON and select relevant fields
     df = df.selectExpr("CAST(value AS STRING)") \
            .select(from_json("value", KafkaSchema).alias("data")) \
-           .select("data.uuid", "data.file_name", "data.content", "data.last_edit", "data.data_creation")
+           .select("data.uuid", "data.file_name","data.file_size", "data.file_extension", "data.content", "data.last_edit", "data.data_creation")
 
     # Filter out empty content and select required columns
     df_filtered = df.filter(col("content").isNotNull() & (col("content") != ""))
@@ -100,13 +110,19 @@ def main():
     df_with_ai = df_filtered.withColumn("ai_response", get_ai_response_udf(col("uuid"), col("file_name"), col("content")))
     df_final = df_with_ai.select("uuid", "file_name", "content", "last_edit", "data_creation", 
                                  col("ai_response.category"), col("ai_response.summary"), col("ai_response.reliability"))
-    
+    # Write in StandardOutput
+    std_query = df_final.select("uuid","file_name","category","summary","reliability") \
+                    .writeStream \
+                    .outputMode("append") \
+                    .format("console") \
+                    .start()
     # Write streaming DataFrame to Elasticsearch
     es_query = df_final.writeStream \
                     .option("checkpointLocation", "/tmp/") \
                     .format("es") \
-                    .start(elastic_index) 
-    es_query.awitTermination()
+                    .start(elastic_index)
+    std_query.awaitTermination()
+    es_query.awaitTermination()
 
 if __name__ == "__main__":
     main()

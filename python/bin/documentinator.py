@@ -16,7 +16,10 @@ import datetime
 
 def get_file_creation_time(file_path):
     return time.ctime(os.path.getctime(file_path))
-
+def get_file_size(file_path):
+    return os.path.getsize(file_path)
+def get_file_extension(file_path):
+    return os.path.splitext(file_path)[1]
 def get_last_edit_timestamp(file_path):
     # Get the last modification time of the file
     if os.path.exists(file_path):
@@ -103,6 +106,8 @@ async def process_file(file_path, outputfile, storage_dir):
     file_data = {
         "uuid": generate_uuid_for_file(file_name),
         "file_name": file_name,
+        "file_size": get_file_size(file_path),
+        "file_extension": get_file_extension(file_path),
         "content": extract_text_from_file(file_path),
         "last_edit": get_last_edit_timestamp(file_path),
         "data_creation": get_file_creation_time(file_path)
@@ -165,7 +170,7 @@ def print_filenames(folder_path):
         print(f"An error occurred: {e}")
 
 if __name__ == "__main__":
-    outputdir = os.getenv("outputdir", "/mastodon-out/")
+    outputdir = os.getenv("outputdir", "/documentinator-out/")
     outputfile = os.path.join(outputdir, "documents.jsonl")
     print("Outfile " + outputfile)
 
