@@ -11,19 +11,17 @@ from watchdog.events import FileSystemEventHandler
 import aiofiles
 import fitz  # PyMuPDF
 import uuid
-import datetime
+from datetime import datetime
 
-
-def get_file_creation_time(file_path):
-    return time.ctime(os.path.getctime(file_path))
-def get_file_size(file_path):
-    return os.path.getsize(file_path)
+def get_file_size_mb(file_path):
+    size = float(os.path.getsize(file_path))
+    return size/(1024*1024)
 def get_file_extension(file_path):
     return os.path.splitext(file_path)[1]
 def get_last_edit_timestamp(file_path):
     # Get the last modification time of the file
     if os.path.exists(file_path):
-        return time.ctime(os.path.getmtime(file_path))
+        return  time.ctime(os.path.getmtime(file_path))
     else:
         return None  # Handle the case where the file does not exist
 def get_base64_encoding(file_path):
@@ -85,7 +83,7 @@ def extract_text_from_file(file_path):
     
 def generate_uuid_for_file(filename):
     # Get current timestamp
-    current_time = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
+    current_time = datetime.now().strftime("%Y%m%d%H%M%S%f")
 
     # Combine filename and timestamp
     combined_str = f"{filename}-{current_time}"
@@ -106,11 +104,10 @@ async def process_file(file_path, outputfile, storage_dir):
     file_data = {
         "uuid": generate_uuid_for_file(file_name),
         "file_name": file_name,
-        "file_size": get_file_size(file_path),
+        "file_size_mb": get_file_size_mb(file_path),
         "file_extension": get_file_extension(file_path),
         "content": extract_text_from_file(file_path),
-        "last_edit": get_last_edit_timestamp(file_path),
-        "data_creation": get_file_creation_time(file_path)
+        "last_edit": get_last_edit_timestamp(file_path)
     }
 
     async with aiofiles.open(outputfile, "a") as json_file:
