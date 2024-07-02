@@ -1,10 +1,9 @@
 import os
 import random
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col, udf, current_timestamp
-from pyspark.sql.types import StringType,IntegerType, StructType, StructField,FloatType
+from pyspark.sql import SparkSession, Row
+from pyspark.sql.functions import from_json, col, udf, current_timestamp, expr, date_format, inline
+from pyspark.sql.types import StringType, IntegerType, StructType, StructField, FloatType
 import openai
-
 # Initialize Spark session
 spark = SparkSession.builder \
     .appName("documentinator") \
@@ -20,7 +19,7 @@ openai.api_key = os.getenv('OPENAI_API_KEY')
 # Kafka, ElasticSearch, and other configurations
 kafkaServer = "broker:9092"
 topic = "docstojson"
-elastic_index = "docs-data"
+elastic_index = "documents-data"
 
 # Define schema for Kafka messages
 KafkaSchema = StructType([
@@ -32,7 +31,7 @@ KafkaSchema = StructType([
     StructField("last_edit", StringType(), True)
 ])
 # Cuts the a string, used to prevent text being too big for the AI model
-def cut_string(s, max_length=3500):
+def cut_string(s, max_length=2300):
     if len(s) > max_length:
         return s[:max_length]
     return s
@@ -42,7 +41,7 @@ def get_ai_response_testing(uuid, filename, text):
     category = random.choice(categories_list)
     summary = filename
     reliability = random.randint(1, 10)
-    return category, summary, reliability
+    return Row(category=category, summary=summary, reliability=int(reliability))
  
 # Function that calls OpenAI API to get response
 def get_ai_response(uuid, filename, text):
@@ -55,7 +54,7 @@ def get_ai_response(uuid, filename, text):
      Your answer must be in this format only without descriptions or other text added: category: <category>, summary: <summary>, reliability: <reliability>"
     """
     file = f"filename: {filename}\ncontent: {cut_string(text)}"
-    
+    print("Input to AI model:")
     try:
         response = openai.chat.completions.create(
             model="gpt-4",
@@ -65,7 +64,8 @@ def get_ai_response(uuid, filename, text):
             ],
         )
         reply = response.choices[0].message.content
-        
+        print("Reply from AI model:")
+        print(reply)
         # Extract category, summary, and reliability from the reply
         category_start = reply.find("category: ") + len("category: ")
         category_end = reply.find(", summary:")
@@ -78,17 +78,19 @@ def get_ai_response(uuid, filename, text):
         reliability_start = reply.find("reliability: ") + len("reliability: ")
         reliability = reply[reliability_start:].strip()
 
-        return category, summary, int(reliability)
+        return Row(category=category, summary=summary, reliability=int(reliability))
     except Exception as e:
         print(f"Error: {e}")
-        return "error", "error", "error" 
+        return Row(category="error", summary="error", reliability=-1)
 
 # Register the UDF
-get_ai_response_udf = udf(lambda uuid, filename, text: get_ai_response(uuid, filename, text), 
-                          StructType([StructField("category", StringType(), True),
-                                      StructField("summary", StringType(), True),
-                                      StructField("reliability", IntegerType(), True)]))
-
+#get_ai_response_udf = udf(get_ai_response_testing)
+# Register the UDF with Spark
+spark.udf.register("get_ai_response_udf", get_ai_response_testing, StructType([
+    StructField("category", StringType(), True),
+    StructField("summary", StringType(), True),
+    StructField("reliability", IntegerType(), True)
+]))
 def main():
     """
     Main function to read from Kafka,
@@ -108,31 +110,44 @@ def main():
     # Deserialize JSON and select relevant fields
     df = df.selectExpr("CAST(value AS STRING)") \
            .select(from_json("value", KafkaSchema).alias("data")) \
-           .select("data.uuid", "data.file_name","data.file_size_mb", "data.file_extension", "data.content", "data.last_edit")
+           .select("data.uuid", "data.file_name", "data.file_size_mb", "data.file_extension", "data.content", "data.last_edit")
 
     # Filter out empty content and select required columns
-    df_filtered = df.filter(col("content").isNotNull() & (col("content") != "") )
+    df_filtered = df.filter(col("content").isNotNull() & (col("content") != ""))
 
-    # Apply the custom function to get AI response
-    df_with_ai = df_filtered.withColumn("ai_response", get_ai_response_udf(col("uuid"), col("file_name"), col("content")))
-    df_clean = df_with_ai.filter(col("ai_response.category") != "error")
-    df_final = df_clean.select("uuid", "file_name", "file_size_mb", "file_extension","content", "last_edit", 
-                                 col("ai_response.category"), col("ai_response.summary"), col("ai_response.reliability"))
-    #Add timestamp to the data
-    df_final_with_timestamp = df_final.withColumn("timestamp", current_timestamp())
-    
+    # Apply the custom function to get AI response using expr and inline
+    df_with_ai = df_filtered.withColumn("ai_response", expr("get_ai_response_udf(uuid, file_name, content)"))
+    # Add current timestamp
+    df_final_with_timestamp = df_with_ai.withColumn("timestamp", date_format(current_timestamp(), "yyyy-MM-dd'T'HH:mm:ss.SSSZ"))
+
     # Write in StandardOutput
-    std_query = df_final_with_timestamp.select("uuid","file_name","category","summary","reliability") \
-                    .writeStream \
-                    .outputMode("append") \
-                    .format("console") \
-                    .start()
+    std_query = df_final_with_timestamp.select(col("uuid"),col("file_name"),col("ai_response.category").alias("category"),col("ai_response.summary").alias("summary"),col("ai_response.reliability").alias("reliability"))\
+                                       .writeStream \
+                                       .outputMode("append") \
+                                       .format("console") \
+                                       .start()
+
     # Write streaming DataFrame to Elasticsearch
-    es_query = df_final_with_timestamp.writeStream \
-                    .option("checkpointLocation", "/tmp/") \
-                    .option("es.mapping.id", "uuid") \
-                    .format("es") \
-                    .start(elastic_index)
+    es_query = df_final_with_timestamp.select(
+        col("uuid"),
+        col("file_name"),
+        col("file_size_mb"),
+        col("file_extension"),
+        col("content"),
+        col("last_edit"),
+        col("ai_response.category").alias("category"),
+        col("ai_response.summary").alias("summary"),
+        col("ai_response.reliability").alias("reliability"),
+        col("timestamp")
+    ) \
+    .writeStream \
+    .option("checkpointLocation", "/tmp/") \
+    .option("es.mapping.id", "timestamp") \
+    .option("es.batch.size.bytes", "30mb") \
+    .option("es.batch.size.entries", "1000") \
+    .format("es") \
+    .start(elastic_index)
+
     std_query.awaitTermination()
     es_query.awaitTermination()
 
