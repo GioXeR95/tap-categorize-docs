@@ -1,7 +1,7 @@
 import os
 import random
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col, udf
+from pyspark.sql.functions import from_json, col, udf, current_timestamp
 from pyspark.sql.types import StringType,IntegerType, StructType, StructField,FloatType
 import openai
 
@@ -31,6 +31,11 @@ KafkaSchema = StructType([
     StructField("content", StringType(), True),
     StructField("last_edit", StringType(), True)
 ])
+# Cuts the a string, used to prevent text being too big for the AI model
+def cut_string(s, max_length=3500):
+    if len(s) > max_length:
+        return s[:max_length]
+    return s
 # Function that returns a random fake response for testing
 def get_ai_response_testing(uuid, filename, text):
     categories_list = ["personal", "business", "game", "payment", "recipe", "receipt"]
@@ -49,7 +54,7 @@ def get_ai_response(uuid, filename, text):
      And on a scale from 1 to 10, rate the reliability of the document information.
      Your answer must be in this format only without descriptions or other text added: category: <category>, summary: <summary>, reliability: <reliability>"
     """
-    file = f"filename: {filename}\ncontent: {text}"
+    file = f"filename: {filename}\ncontent: {cut_string(text)}"
     
     try:
         response = openai.chat.completions.create(
@@ -73,7 +78,7 @@ def get_ai_response(uuid, filename, text):
         reliability_start = reply.find("reliability: ") + len("reliability: ")
         reliability = reply[reliability_start:].strip()
 
-        return category, summary, reliability
+        return category, summary, int(reliability)
     except Exception as e:
         print(f"Error: {e}")
         return "error", "error", "error" 
@@ -106,21 +111,24 @@ def main():
            .select("data.uuid", "data.file_name","data.file_size_mb", "data.file_extension", "data.content", "data.last_edit")
 
     # Filter out empty content and select required columns
-    df_filtered = df.filter(col("content").isNotNull() & (col("content") != ""))
+    df_filtered = df.filter(col("content").isNotNull() & (col("content") != "") )
 
     # Apply the custom function to get AI response
     df_with_ai = df_filtered.withColumn("ai_response", get_ai_response_udf(col("uuid"), col("file_name"), col("content")))
-    
-    df_final = df_with_ai.select("uuid", "file_name", "file_size_mb", "file_extension","content", "last_edit", 
+    df_clean = df_with_ai.filter(col("ai_response.category") != "error")
+    df_final = df_clean.select("uuid", "file_name", "file_size_mb", "file_extension","content", "last_edit", 
                                  col("ai_response.category"), col("ai_response.summary"), col("ai_response.reliability"))
+    #Add timestamp to the data
+    df_final_with_timestamp = df_final.withColumn("timestamp", current_timestamp())
+    
     # Write in StandardOutput
-    std_query = df_final.select("uuid","file_name","category","summary","reliability") \
+    std_query = df_final_with_timestamp.select("uuid","file_name","category","summary","reliability") \
                     .writeStream \
                     .outputMode("append") \
                     .format("console") \
                     .start()
     # Write streaming DataFrame to Elasticsearch
-    es_query = df_final.writeStream \
+    es_query = df_final_with_timestamp.writeStream \
                     .option("checkpointLocation", "/tmp/") \
                     .option("es.mapping.id", "uuid") \
                     .format("es") \
