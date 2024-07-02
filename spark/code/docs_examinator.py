@@ -19,7 +19,7 @@ openai.api_key = os.getenv('OPENAI_API_KEY')
 # Kafka, ElasticSearch, and other configurations
 kafkaServer = "broker:9092"
 topic = "docstojson"
-elastic_index = "documents-data"
+elastic_index = "documents-index"
 
 # Define schema for Kafka messages
 KafkaSchema = StructType([
@@ -42,7 +42,18 @@ def get_ai_response_testing(uuid, filename, text):
     summary = filename
     reliability = random.randint(1, 10)
     return Row(category=category, summary=summary, reliability=int(reliability))
- 
+
+def safe_cast_int(input_str):
+    # Remove non-numeric characters
+    numeric_str = ''.join(filter(str.isdigit, input_str))
+    
+    # Convert to integer
+    try:
+        result = int(numeric_str)
+    except ValueError:
+        result = None  # Handle cases where input_str does not form a valid integer
+    
+    return result
 # Function that calls OpenAI API to get response
 def get_ai_response(uuid, filename, text):
     system_prompt = """
@@ -78,7 +89,7 @@ def get_ai_response(uuid, filename, text):
         reliability_start = reply.find("reliability: ") + len("reliability: ")
         reliability = reply[reliability_start:].strip()
 
-        return Row(category=category, summary=summary, reliability=int(reliability))
+        return Row(category=category, summary=summary, reliability=safe_cast_int(reliability))
     except Exception as e:
         print(f"Error: {e}")
         return Row(category="error", summary="error", reliability=-1)
@@ -86,7 +97,7 @@ def get_ai_response(uuid, filename, text):
 # Register the UDF
 #get_ai_response_udf = udf(get_ai_response_testing)
 # Register the UDF with Spark
-spark.udf.register("get_ai_response_udf", get_ai_response_testing, StructType([
+spark.udf.register("get_ai_response_udf", get_ai_response, StructType([
     StructField("category", StringType(), True),
     StructField("summary", StringType(), True),
     StructField("reliability", IntegerType(), True)
@@ -142,14 +153,14 @@ def main():
     ) \
     .writeStream \
     .option("checkpointLocation", "/tmp/") \
-    .option("es.mapping.id", "timestamp") \
     .option("es.batch.size.bytes", "30mb") \
     .option("es.batch.size.entries", "1000") \
     .format("es") \
     .start(elastic_index)
-
-    std_query.awaitTermination()
     es_query.awaitTermination()
+    #.option("es.mapping.id", "timestamp") \
+    std_query.awaitTermination()
+
 
 if __name__ == "__main__":
     main()
