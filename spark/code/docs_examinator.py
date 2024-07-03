@@ -14,8 +14,9 @@ spark = SparkSession.builder \
 spark.sparkContext.setLogLevel("ERROR")
 
 # Read OpenAI API key from environment variable
-openai.api_key = os.getenv('OPENAI_API_KEY')
-
+#openai.api_key = os.getenv('OPENAI_API_KEY')
+openai.api_key = ":D"
+openai.base_url = "http://192.168.0.75:8080"
 # Kafka, ElasticSearch, and other configurations
 kafkaServer = "broker:9092"
 topic = "docstojson"
