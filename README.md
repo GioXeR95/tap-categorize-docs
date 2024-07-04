@@ -1,6 +1,6 @@
-# tap-categorize-docs
+# Documentinator
 
-tap-categorize-docs is a project designed to categorize documents using GPT-4 with OpenAI's API and display the analyzed data in Kibana.
+Documentinator is a project designed to categorize documents using GPT-4 with OpenAI's API and display the analyzed data in Kibana.
 For every document, it provides a summary, a category, and a reliability score from 1 to 10.
 
 ## Prerequisites
